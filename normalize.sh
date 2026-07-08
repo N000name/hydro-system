@@ -33,3 +33,4 @@ cat "$INPUT_FILE" \
     > "$OUTPUT_FILE"
 
 echo "处理完成! 输出文件: $OUTPUT_FILE"
+# 这是注释
