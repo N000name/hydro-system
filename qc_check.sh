@@ -1,132 +1,108 @@
 #!/bin/bash
-# 水文数据质量检查脚本
-# 用法: ./qc_check.sh <输入数据文件>
-
-set -e
 
 # 参数校验
-if [ $# -ne 1 ]; then
-    echo "错误: 请指定输入数据文件"
-    echo "用法: $0 <数据文件路径>"
+if [ $# -ne 2 ]; then
+    echo "用法: $0 <输入CSV路径> <输出报告文件路径>" >&2
     exit 1
 fi
 
-INPUT_FILE="$1"
+input_file="$1"
+output_file="$2"
 
-if [ ! -f "$INPUT_FILE" ]; then
-    echo "错误: 文件 $INPUT_FILE 不存在"
+# 输入文件存在性校验
+if [ ! -f "$input_file" ]; then
+    echo "错误：输入文件不存在" >&2
     exit 1
 fi
 
-# 核心检测逻辑（GNU Awk实现）
-gawk -F ',' '
+# 执行质量检查，结果写入输出文件
+awk -F ',' '
 BEGIN {
-    # 初始化计数器
-    total_records = 0
-    cnt_water_mutate = 0   # 水位突变异常
-    cnt_rain_neg = 0       # 降雨量异常
-    cnt_time_dup = 0       # 时间戳重复
-    cnt_time_disorder = 0  # 时间戳乱序
-    detail_num = 0         # 异常详情条目计数
+    total = 0
+    water_mutate = 0
+    rain_neg = 0
+    time_dup = 0
+    time_reverse = 0
+    detail_cnt = 0
 }
 
-# 跳过表头行
-NR == 1 { next }
+NR == 1 { next }  # 跳过表头行
 
 {
-    total_records++
+    total++
     line_no = NR
-    raw_line = $0
+    time = $2
+    water = $3 + 0
+    rain = $4 + 0
+    raw = $0
+    line_has_err = 0
 
-    # 时间转时间戳（兼容 yyyy-MM-dd 和 yyyy/MM/dd 格式）
-    time_str = $1
-    gsub(/[-/:]/, " ", time_str)
-    curr_ts = mktime(time_str)
-
-    # 提取水位、降雨量数值
-    curr_water = $5 + 0
-    curr_rain = $7 + 0
-
-    # 1. 降雨量异常检测（负值）
-    if (curr_rain < 0) {
-        cnt_rain_neg++
-        detail_num++
-        arr_line[detail_num] = line_no
-        arr_type[detail_num] = "降雨量异常"
-        arr_raw[detail_num] = raw_line
-        unique_abnormal[line_no] = 1
+    # 1. 降雨量异常：降雨量为负值
+    if (rain < 0) {
+        rain_neg++
+        detail[++detail_cnt] = line_no ",降雨量异常," raw
+        line_has_err = 1
     }
 
-    # 相邻行对比类检测（从第二条数据开始）
-    if (total_records > 1) {
-        # 2. 时间戳重复检测
-        if (curr_ts == prev_ts) {
-            cnt_time_dup++
-            detail_num++
-            arr_line[detail_num] = line_no
-            arr_type[detail_num] = "时间戳重复"
-            arr_raw[detail_num] = raw_line
-            unique_abnormal[line_no] = 1
+    # 从第二条数据开始，与上一条记录对比
+    if (NR > 2) {
+        # 2. 水位突变异常：相邻水位差绝对值 > 3m
+        diff = water - prev_water
+        if (diff < 0) diff = -diff
+        if (diff > 3) {
+            water_mutate++
+            detail[++detail_cnt] = line_no ",水位突变异常," raw
+            line_has_err = 1
         }
 
-        # 3. 时间戳乱序检测
-        if (curr_ts < prev_ts) {
-            cnt_time_disorder++
-            detail_num++
-            arr_line[detail_num] = line_no
-            arr_type[detail_num] = "时间戳乱序"
-            arr_raw[detail_num] = raw_line
-            unique_abnormal[line_no] = 1
+        # 3. 时间戳重复：相邻时间完全相同
+        if (time == prev_time) {
+            time_dup++
+            detail[++detail_cnt] = line_no ",时间戳重复," raw
+            line_has_err = 1
         }
 
-        # 4. 水位突变检测（相邻差值绝对值>3m）
-        water_diff = curr_water - prev_water
-        if (water_diff < 0) water_diff = -water_diff
-        if (water_diff > 3) {
-            cnt_water_mutate++
-            detail_num++
-            arr_line[detail_num] = line_no
-            arr_type[detail_num] = "水位突变异常"
-            arr_raw[detail_num] = raw_line
-            unique_abnormal[line_no] = 1
+        # 4. 时间戳乱序：后一条时间早于前一条
+        if (time < prev_time) {
+            time_reverse++
+            detail[++detail_cnt] = line_no ",时间戳乱序," raw
+            line_has_err = 1
         }
     }
 
-    # 更新上一行状态
-    prev_ts = curr_ts
-    prev_water = curr_water
+    # 标记异常行，用于去重统计
+    if (line_has_err) {
+        err_lines[line_no] = 1
+    }
+
+    # 保存当前值，供下一行对比
+    prev_time = time
+    prev_water = water
 }
 
 END {
-    # 计算去重后异常记录总数
-    abnormal_total = 0
-    for (l in unique_abnormal) {
-        abnormal_total++
-    }
+    # 统计去重后的异常总行数
+    err_total = 0
+    for (k in err_lines) err_total++
 
     # 计算异常率，保留两位小数
-    if (total_records > 0) {
-        abnormal_rate = sprintf("%.2f", (abnormal_total / total_records) * 100)
-    } else {
-        abnormal_rate = "0.00"
-    }
+    rate = total > 0 ? err_total / total * 100 : 0
 
-    # 输出结构化报告
-    print "========== 数据质量检查报告 =========="
-    print "总记录数（不含表头）: " total_records
-    print "水位突变异常数:      " cnt_water_mutate
-    print "降雨量异常数:        " cnt_rain_neg
-    print "时间戳重复数:        " cnt_time_dup
-    print "时间戳乱序数:        " cnt_time_disorder
-    print "异常记录总数（去重）: " abnormal_total
-    print "异常率:              " abnormal_rate "%"
-    print ""
-    print "========== 异常明细 =========="
-    printf "%-6s %-12s %s\n", "行号", "异常类型", "原始数据"
-    print "----------------------------------------"
-    for (i = 1; i <= detail_num; i++) {
-        printf "%-6d %-12s %s\n", arr_line[i], arr_type[i], arr_raw[i]
+    # 输出统计项
+    printf "总记录数：%d\n", total
+    printf "水位突变异常：%d\n", water_mutate
+    printf "降雨量异常：%d\n", rain_neg
+    printf "时间戳重复：%d\n", time_dup
+    printf "时间戳乱序：%d\n", time_reverse
+    printf "异常记录总数：%d\n", err_total
+    printf "异常率：%.2f%%\n", rate
+
+    # 输出异常明细
+    for (i = 1; i <= detail_cnt; i++) {
+        print detail[i]
     }
 }
-' "$INPUT_FILE"
+' "$input_file" > "$output_file"
+
+exit 0
 
