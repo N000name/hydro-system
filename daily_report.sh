@@ -1,73 +1,88 @@
 #!/bin/bash
-# 水文数据日报表生成脚本
-# 用法: ./daily_report.sh <输入数据文件>
-
-set -e
 
 # 参数校验
-if [ $# -ne 1 ]; then
-    echo "错误: 请指定输入数据文件"
-    echo "用法: $0 <数据文件路径>"
+if [ $# -ne 2 ]; then
+    echo "用法: $0 <输入CSV路径> <输出日报文件路径>" >&2
     exit 1
 fi
 
-INPUT_FILE="$1"
+input_file="$1"
+output_file="$2"
 
-if [ ! -f "$INPUT_FILE" ]; then
-    echo "错误: 文件 $INPUT_FILE 不存在"
+# 输入文件存在性校验
+if [ ! -f "$input_file" ]; then
+    echo "错误：输入文件不存在" >&2
     exit 1
 fi
 
-# 输出CSV表头
-echo "站点编号,日期,平均水位,最高水位,最高水位时间,最低水位,最低水位时间,累计降雨量,完整率"
-
-# 核心统计逻辑 + 按站点、日期排序
-gawk -F ',' '
-NR == 1 { next }  # 跳过表头行
-
+# 按站点+日期分组统计，结果写入输出文件
+awk -F ',' '
+NR == 1 { next }  # 跳过表头
 {
-    datetime = $1
-    site_code = $3
-    water = $5 + 0
-    rain = $7 + 0
-    
-    # 提取日期（前10位，兼容 yyyy/MM/dd 格式）
-    date = substr(datetime, 1, 10)
-    # 以「站点+日期」为分组键
-    key = site_code SUBSEP date
-    
-    # 累计统计量
-    sum_water[key] += water
-    record_count[key]++
-    sum_rain[key] += rain
-    
-    # 记录最高水位及对应时间
-    if (record_count[key] == 1 || water > max_water[key]) {
+    site = $1
+    time = $2
+    water = $3 + 0
+    rain = $4 + 0
+    date = substr(time, 1, 10)  # 提取日期部分 yyyy-MM-dd
+    key = site "|" date        # 分组键：站点|日期
+
+    # 分组初始化：首次出现时设置极值初始值
+    if (!(key in count)) {
+        count[key] = 0
+        sum_water[key] = 0
+        sum_rain[key] = 0
         max_water[key] = water
-        max_time[key] = datetime
-    }
-    
-    # 记录最低水位及对应时间
-    if (record_count[key] == 1 || water < min_water[key]) {
+        max_time[key] = time
         min_water[key] = water
-        min_time[key] = datetime
+        min_time[key] = time
+    }
+
+    # 累计统计
+    count[key]++
+    sum_water[key] += water
+    sum_rain[key] += rain
+
+    # 更新最高水位：仅严格大于时更新，保证记录首次出现时间
+    if (water > max_water[key]) {
+        max_water[key] = water
+        max_time[key] = time
+    }
+
+    # 更新最低水位：仅严格小于时更新，保证记录首次出现时间
+    if (water < min_water[key]) {
+        min_water[key] = water
+        min_time[key] = time
     }
 }
 
 END {
-    # 遍历所有分组，格式化输出
-    for (k in sum_water) {
-        split(k, parts, SUBSEP)
+    # 输出固定表头（9列，顺序不可变）
+    print "站点编号,日期,日平均水位,日最高水位,日最高水位时间,日最低水位,日最低水位时间,日累计降雨量,数据完整率"
+
+    # 收集所有分组键并排序（按站点升序、日期升序）
+    n = 0
+    for (k in count) {
+        n++
+        keys[n] = k
+    }
+    asort(keys)
+
+    # 逐行输出统计结果
+    for (i = 1; i <= n; i++) {
+        k = keys[i]
+        split(k, parts, "|")
         site = parts[1]
-        day = parts[2]
-        
-        avg_water = sum_water[k] / record_count[k]
-        completeness = (record_count[k] / 24) * 100
-        
-        printf "%s,%s,%.2f,%.2f,%s,%.2f,%s,%.2f,%.1f\n", \
-            site, day, avg_water, max_water[k], max_time[k], \
+        date = parts[2]
+
+        avg_water = sum_water[k] / count[k]
+        completeness = count[k] / 24 * 100
+
+        printf "%s,%s,%.2f,%.2f,%s,%.2f,%s,%.2f,%.1f%%\n", \
+            site, date, avg_water, max_water[k], max_time[k], \
             min_water[k], min_time[k], sum_rain[k], completeness
     }
 }
-' "$INPUT_FILE" | sort -t ',' -k1,1 -k2,2
+' "$input_file" > "$output_file"
+
+exit 0
 
