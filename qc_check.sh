@@ -1,96 +1,57 @@
 #!/bin/bash
-
-# ============================================
-# qc_check.sh - 水文数据质量检查脚本 (修复版)
-# 用法: ./qc_check.sh 输入文件.csv
-# 功能: 检查水位突变(>3m)、负降雨量、时间重复/乱序
-# ============================================
-
-if [ $# -ne 1 ]; then
-    echo "用法: $0 <CSV文件>"
+if [ $# -ne 2 ]; then
+    echo "用法: $0 <输入CSV> <输出报告>"
     exit 1
 fi
-
-INPUT_FILE="$1"
-
-if [ ! -f "$INPUT_FILE" ]; then
-    echo "错误: 文件 '$INPUT_FILE' 不存在"
+input_file="$1"
+output_file="$2"
+if [ ! -f "$input_file" ]; then
+    echo "错误: 输入文件 '$input_file' 不存在"
     exit 1
 fi
-
-echo "开始质量检查: $INPUT_FILE"
-echo "========================================="
-
-total=0
-abnormal=0
-mutate=0
-neg_rain=0
-duplicate=0
-out_of_order=0
-
-prev_time=""
-prev_level=""
-
-TEMP_FILE=$(mktemp)
-tail -n +2 "$INPUT_FILE" > "$TEMP_FILE"
-
-while IFS=',' read -r datetime station code device level flow ph turb rain temp ec
-do
-    if [ -z "$datetime" ]; then
-        continue
-    fi
-    
-    total=$((total + 1))
-    
+total=0; mutate=0; neg_rain=0; duplicate=0; out_of_order=0; line_num=1
+prev_time=""; prev_level=""
+> "$output_file"
+tail -n +2 "$input_file" | while IFS=',' read -r station datetime level rain; do
+    total=$((total+1)); line_num=$((line_num+1))
     level=$(echo "$level" | sed 's/^ *//;s/ *$//')
     rain=$(echo "$rain" | sed 's/^ *//;s/ *$//')
     datetime=$(echo "$datetime" | sed 's/^ *//;s/ *$//')
-    
-    if [ -n "$rain" ] && [ "$rain" != "NULL" ] && [ "$rain" != "null" ]; then
-        if (( $(echo "$rain < 0" | bc -l) )); then
-            echo "警告: 负降雨量! 行号: $total, 时间: $datetime, 降雨量: $rain"
-            abnormal=$((abnormal + 1))
-            neg_rain=$((neg_rain + 1))
-        fi
+    station=$(echo "$station" | sed 's/^ *//;s/ *$//')
+    if (( $(echo "$rain < 0" | bc -l 2>/dev/null) )); then
+        neg_rain=$((neg_rain+1))
+        echo "$line_num,降雨量异常,$station,$datetime,$level,$rain" >> "$output_file"
     fi
-    
     if [ -n "$prev_level" ] && [ -n "$level" ]; then
-        diff=$(echo "$prev_level - $level" | bc | tr -d '-')
-        if (( $(echo "$diff > 3.0" | bc -l) )); then
-            echo "警告: 水位突变! 上一行: $prev_level, 当前行: $level, 差值: $diff"
-            abnormal=$((abnormal + 1))
-            mutate=$((mutate + 1))
+        diff=$(echo "$prev_level - $level" | bc | tr -d '-' 2>/dev/null)
+        if (( $(echo "$diff > 3.0" | bc -l 2>/dev/null) )); then
+            mutate=$((mutate+1))
+            echo "$line_num,水位突变异常,$station,$datetime,$level,$rain" >> "$output_file"
         fi
     fi
-    
     if [ -n "$prev_time" ] && [ -n "$datetime" ]; then
         if [ "$datetime" == "$prev_time" ]; then
-            echo "警告: 时间重复! 时间: $datetime"
-            abnormal=$((abnormal + 1))
-            duplicate=$((duplicate + 1))
+            duplicate=$((duplicate+1))
+            echo "$line_num,时间戳重复,$station,$datetime,$level,$rain" >> "$output_file"
         elif [ "$datetime" \< "$prev_time" ]; then
-            echo "警告: 时间乱序! 上一行: $prev_time, 当前行: $datetime"
-            abnormal=$((abnormal + 1))
-            out_of_order=$((out_of_order + 1))
+            out_of_order=$((out_of_order+1))
+            echo "$line_num,时间戳乱序,$station,$datetime,$level,$rain" >> "$output_file"
         fi
     fi
-    
-    prev_time="$datetime"
-    prev_level="$level"
-    
-done < "$TEMP_FILE"
-
-rm -f "$TEMP_FILE"
-
-echo "========================================="
-echo "质量检查报告"
-echo "总记录数: $total"
-echo "异常总数: $abnormal"
-if [ $total -gt 0 ]; then
-    rate=$(echo "scale=2; $abnormal * 100 / $total" | bc)
-    echo "异常率: $rate%"
-fi
-echo "水位突变: $mutate"
-echo "负降雨量: $neg_rain"
-echo "时间重复: $duplicate"
-echo "时间乱序: $out_of_order"
+    prev_time="$datetime"; prev_level="$level"
+done
+abnormal=$((mutate+neg_rain+duplicate+out_of_order))
+{
+    echo "总记录数：$total"
+    echo "水位突变异常：$mutate"
+    echo "降雨量异常：$neg_rain"
+    echo "时间戳重复：$duplicate"
+    echo "时间戳乱序：$out_of_order"
+    echo "异常记录总数：$abnormal"
+    if [ $total -gt 0 ]; then
+        rate=$(echo "scale=2; $abnormal * 100 / $total" | bc 2>/dev/null)
+        echo "异常率：${rate}%"
+    fi
+} >> "$output_file"
+echo "质量检查完成: $output_file"
+exit 0
