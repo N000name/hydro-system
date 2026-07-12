@@ -1,0 +1,6 @@
+磁盘镜像配置说明
+1. 镜像路径：/data/hydro/disk.img
+2. 镜像大小：100MB
+3. 文件系统格式：ext4
+4. 对应挂载点：/data/hydro/mount
+
