@@ -1,0 +1,43 @@
+# ========== Java 编译构建产物 ==========
+*.class
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+*.rar
+target/
+build/
+out/
+
+# ========== 编辑器/IDE 临时文件 ==========
+# vim
+*.swp
+*.swo
+*~
+# VS Code
+.vscode/
+# IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+# Eclipse
+.project
+.classpath
+.settings/
+
+# ========== 系统与运行临时文件 ==========
+.DS_Store
+Thumbs.db
+*.log
+tmp/
+temp/
+
+
+
+
+
+
+
+
